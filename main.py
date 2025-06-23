@@ -1,0 +1,191 @@
+import os
+import time
+from datetime import datetime
+import paramiko
+import sys
+import schedule
+
+from core.ssh_client import SSHClient
+from core.metrics_collector import MetricsCollector
+from core.analyzer import Analyzer
+from report.report_generator import generate_baseline_report, append_cpu_event_to_report, append_memory_event_to_report, check_if_memory_event_exists
+from core.logger import logger
+from config.config import (
+    SSH_HOST, SSH_PORT, SSH_USER, SSH_PASSWORD,
+    HIGH_FREQ_CPU_THRESHOLD,
+    REPORTS_DIR,
+    BASELINE_REPORT_FILENAME,
+    EVENTS_REPORT_FILENAME_TEMPLATE,
+    CONTINUOUS_MONITOR_INTERVAL_SECONDS,
+    EMAIL_ENABLED,
+    MEMORY_MONITOR_INTERVAL_SECONDS
+)
+from core.email_utils import send_report_email, build_html_report_email
+
+print('CWD:', os.getcwd())
+print('__file__:', __file__)
+
+os.makedirs(REPORTS_DIR, exist_ok=True)
+
+def continuous_monitoring(ssh_client, mysql_pid):
+    """
+    Функция для непрерывного мониторинга CPU и памяти.
+    """
+    try:
+        logger.info(f"Запуск непрерывного мониторинга для PID: {mysql_pid} с интервалом {CONTINUOUS_MONITOR_INTERVAL_SECONDS} сек.")
+        metrics_collector = MetricsCollector(ssh_client)
+        last_memory_check = 0
+
+        while True:
+            start_time = time.time()
+            # 1. Мониторинг CPU (часто)
+            cpu_usage = metrics_collector.get_cpu_usage_for_pid(mysql_pid)
+            if cpu_usage is not None and cpu_usage > HIGH_FREQ_CPU_THRESHOLD:
+                logger.warning(f"Обнаружен всплеск CPU: {cpu_usage}%")
+                
+                # Собираем доп. информацию в момент пика с несколькими попытками
+                process_list = None
+                for attempt in range(3):  # 3 попытки
+                    process_list = metrics_collector.get_mysql_processlist()
+                    # Проверяем, что получили результат (не None и не пустая строка)
+                    if process_list and process_list.strip():
+                        # Если результат не содержит только разделители таблицы, считаем его валидным
+                        if not process_list.strip().startswith('+----') or len(process_list.strip().splitlines()) > 3:
+                            break  # Нашли непустой результат с данными
+                    time.sleep(1)  # Ждем 1 секунду перед следующей попыткой
+                
+                # Анализируем производительность запросов
+                performance_analysis = metrics_collector.analyze_query_performance(process_list)
+                
+                event_report_path = os.path.join(
+                    REPORTS_DIR,
+                    EVENTS_REPORT_FILENAME_TEMPLATE.format(date=datetime.now().strftime('%Y%m%d'))
+                )
+                append_cpu_event_to_report(
+                    {
+                        'time': datetime.now().strftime('%H:%M:%S'), 
+                        'cpu': cpu_usage, 
+                        'pid': mysql_pid,
+                        'process_list': process_list,
+                        'performance_analysis': performance_analysis
+                    }, 
+                    event_report_path
+                )
+
+            # 2. Мониторинг памяти (раз в MEMORY_MONITOR_INTERVAL_SECONDS)
+            now = time.time()
+            if now - last_memory_check >= MEMORY_MONITOR_INTERVAL_SECONDS:
+                memory_usage = metrics_collector.get_memory_usage_percent()
+                analyzer = Analyzer({}, []) # Анализатор используется только для порогов
+                memory_threshold = analyzer.memory_threshold
+
+                if memory_usage is not None and memory_usage > memory_threshold:
+                    event_report_path = os.path.join(
+                        REPORTS_DIR,
+                        EVENTS_REPORT_FILENAME_TEMPLATE.format(date=datetime.now().strftime('%Y%m%d'))
+                    )
+                    if not check_if_memory_event_exists(event_report_path):
+                        append_memory_event_to_report(
+                            {'time': datetime.now().strftime('%H:%M:%S'), 'memory_percent': memory_usage},
+                            event_report_path
+                        )
+                        logger.warning(f"Информация о памяти добавлена в {event_report_path}")
+                    # else:
+                    #     logger.info("Событие о высоком потреблении памяти уже записано сегодня. Пропускаю.")
+                last_memory_check = now
+
+            # Ждем до следующей итерации CPU
+            elapsed = time.time() - start_time
+            sleep_time = max(0, CONTINUOUS_MONITOR_INTERVAL_SECONDS - elapsed)
+            time.sleep(sleep_time)
+
+    except KeyboardInterrupt:
+        logger.info("Получен сигнал KeyboardInterrupt. Завершаю непрерывный мониторинг.")
+
+def send_daily_report():
+    today = datetime.now().strftime('%Y%m%d')
+    report_path = os.path.join(REPORTS_DIR, EVENTS_REPORT_FILENAME_TEMPLATE.format(date=today))
+    if os.path.exists(report_path):
+        send_report_email(
+            subject=f"MySQL Perf Report {today}",
+            body=f"Автоматический отчет о событиях MySQL за {today}",
+            attachment_path=report_path
+        )
+    else:
+        logger.warning(f"Файл отчета не найден для отправки: {report_path}")
+
+def main():
+    logger.info("Сервис мониторинга MySQL запущен в режиме непрерывного отслеживания.")
+
+    ssh_client = SSHClient()
+    try:
+        ssh_client.connect()
+        metrics_collector = MetricsCollector(ssh_client)
+
+        # --- Этап 1: Сбор базовых метрик (выполняется один раз) ---
+        logger.info("Начинаю сбор основных метрик для базового отчета...")
+        baseline_metrics_data = metrics_collector.collect_baseline_metrics()
+        logger.info("Сбор основных метрик для базового отчета завершен.")
+
+        baseline_report_path = os.path.join(REPORTS_DIR, BASELINE_REPORT_FILENAME)
+        if not os.path.exists(baseline_report_path):
+            logger.info(f"Создаю базовый отчет: {baseline_report_path}")
+            generate_baseline_report(baseline_metrics_data, baseline_report_path)
+            logger.info("Базовый отчет успешно создан.")
+        else:
+            logger.info(f"Базовый отчет {baseline_report_path} уже существует. Пропускаю создание.")
+        
+        logger.info("="*30)
+
+        # --- Этап 2: Непрерывный мониторинг ---
+        mysql_pid = metrics_collector.get_mysqld_pid()
+        if not mysql_pid:
+            logger.error("Не удалось получить PID процесса mysqld. Непрерывный мониторинг невозможен.")
+            return
+
+        continuous_monitoring(ssh_client, mysql_pid)
+
+        if EMAIL_ENABLED:
+            schedule.every().day.at("23:59").do(send_daily_report)
+            schedule.every().day.at("09:00").do(send_daily_report)
+
+        while True:
+            schedule.run_pending()
+            time.sleep(30)
+
+    except paramiko.ssh_exception.AuthenticationException:
+        print("[CRITICAL] Ошибка SSH: неверный логин или пароль. Проверьте переменные окружения в .env!")
+        logger.critical("Ошибка SSH: неверный логин или пароль. Проверьте переменные окружения в .env!")
+        if ssh_client:
+            ssh_client.close()
+        sys.exit(1)
+    except Exception as e:
+        logger.error(f"Критическая ошибка в приложении: {e}", exc_info=True)
+        if ssh_client:
+            ssh_client.close()
+        print(f"[CRITICAL] Необработанная ошибка: {e}")
+        sys.exit(1)
+    finally:
+        if ssh_client and ssh_client.is_connected():
+            ssh_client.close()
+    
+    logger.info("Сервис мониторинга MySQL остановлен.")
+
+
+if __name__ == '__main__':
+    if '--send-report-now' in sys.argv:
+        today = datetime.now().strftime('%Y%m%d')
+        report_path = os.path.join(REPORTS_DIR, EVENTS_REPORT_FILENAME_TEMPLATE.format(date=today))
+        html_body = build_html_report_email(today)
+        try:
+            send_report_email(
+                subject=f"MySQL Perf Report {today}",
+                body=f"Автоматический отчет о событиях MySQL за {today}",
+                attachment_path=report_path,
+                html_body=html_body
+            )
+            print("Письмо отправлено успешно!")
+        except Exception as e:
+            print(f"[EMAIL ERROR] {e}")
+        sys.exit(0)
+    main() 

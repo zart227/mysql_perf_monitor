@@ -1,0 +1,12 @@
+version: '3.8'
+
+services:
+  mysql_perf_monitor:
+    build: .
+    container_name: mysql_perf_monitor
+    env_file:
+      - .env
+    volumes:
+      - ./logs:/app/logs
+      - ./reports:/app/reports
+    restart: unless-stopped 
