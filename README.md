@@ -60,6 +60,9 @@ CONTINUOUS_MONITOR_INTERVAL_SECONDS=10
 LOG_TO_FILE=True          # Записывать логи в файл
 LOG_TO_CONSOLE=True       # Выводить логи в консоль
 LOG_LEVEL=INFO           # Уровень логирования: DEBUG, INFO, WARNING, ERROR, CRITICAL
+
+# Email-отчеты
+EMAIL_REPORT_TIMES=09:00,23:59
 ```
 
 **Важно**: Файл `.env` не должен попадать в систему контроля версий. Убедитесь, что он добавлен в `.gitignore`.
@@ -166,6 +169,20 @@ python -m mysql_perf_reporter.main
 
 ## Контакты
 Автор: <ваше имя>
+
+## Email-отчеты
+
+Время отправки email-отчетов настраивается через переменную EMAIL_REPORT_TIMES в `.env`:
+
+```env
+EMAIL_REPORT_TIMES=09:00,23:59
+```
+- Можно указать несколько значений через запятую (например, `08:00,12:00,18:00`).
+- Формат времени — HH:MM (24-часовой).
+- По умолчанию письма отправляются в 09:00 и 23:59.
+
+**Все параметры SMTP/email также настраиваются через .env:**
+- EMAIL_ENABLED, SMTP_SERVER, SMTP_PORT, SMTP_USER, SMTP_PASSWORD, FROM_ADDR, TO_ADDRS
 
 ## Запуск через Docker
 

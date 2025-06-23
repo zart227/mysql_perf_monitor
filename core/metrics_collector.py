@@ -10,7 +10,8 @@ class MetricsCollector:
 
     def _execute_command(self, command):
         """Обертка для выполнения команды с логированием."""
-        logger.info(f"Выполнение команды на удаленном сервере: '{command}'")
+        if DEBUG_MODE:
+            logger.info(f"Выполнение команды на удаленном сервере: '{command}'")
         try:
             result = self.ssh.exec_command(command)
             if result and 'Access denied' in result:
