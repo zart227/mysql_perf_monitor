@@ -4,6 +4,7 @@ from datetime import datetime
 import paramiko
 import sys
 import schedule
+import signal
 
 from core.ssh_client import SSHClient
 from core.metrics_collector import MetricsCollector
@@ -27,6 +28,19 @@ print('CWD:', os.getcwd())
 print('__file__:', __file__)
 
 os.makedirs(REPORTS_DIR, exist_ok=True)
+
+ssh_client = None  # Глобальная переменная для доступа из обработчика
+
+def handle_exit(signum, frame):
+    logger.info(f"Получен сигнал завершения ({signum}). Завершаю работу.")
+    global ssh_client
+    if ssh_client and ssh_client.is_connected():
+        ssh_client.close()
+    logger.info("Сервис мониторинга MySQL остановлен.")
+    sys.exit(0)
+
+signal.signal(signal.SIGTERM, handle_exit)
+signal.signal(signal.SIGINT, handle_exit)
 
 def continuous_monitoring(ssh_client, mysql_pid):
     """
@@ -116,6 +130,7 @@ def send_daily_report():
         logger.warning(f"Файл отчета не найден для отправки: {report_path}")
 
 def main():
+    global ssh_client
     logger.info("Сервис мониторинга MySQL запущен в режиме непрерывного отслеживания.")
 
     ssh_client = SSHClient()

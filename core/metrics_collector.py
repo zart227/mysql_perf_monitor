@@ -22,6 +22,8 @@ class MetricsCollector:
                 sys.exit(1)
             if DEBUG_MODE:
                 logger.info(f"Результат выполнения команды: {repr(result)}")
+            if not result:
+                logger.warning(f"Команда '{command}' вернула пустой результат или ошибку.")
             return result
         except Exception as e:
             logger.error(f"Ошибка выполнения команды '{command}': {e}", exc_info=True)
@@ -36,6 +38,7 @@ class MetricsCollector:
         
         commands = {
             'cpuinfo': 'cat /proc/cpuinfo',
+            'memory': 'free -m',
             'global_variables': f"mysql -u'{mysql_user}' -p'{mysql_password}' -h'{mysql_host}' -e \"SHOW GLOBAL VARIABLES;\""
         }
         for key, command in commands.items():

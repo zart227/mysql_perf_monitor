@@ -73,6 +73,9 @@ BASELINE_TEMPLATE = """
 ## Информация о CPU
 {{ metrics.cpuinfo }}
 ---
+## Информация о памяти
+{{ metrics.memory }}
+---
 ## Глобальные переменные MySQL
 {{ metrics.global_variables }}
 """
@@ -300,9 +303,10 @@ def generate_report(metrics, issues, recommendations, output_path=None):
     return report 
 
 def generate_baseline_report(metrics, output_path):
-    """Генерирует только базовый отчет с cpuinfo и global_variables."""
+    """Генерирует только базовый отчет с cpuinfo, memory и global_variables."""
     processed_metrics = {
         'cpuinfo': parse_and_format_cpuinfo(metrics.get('cpuinfo', 'N/A')),
+        'memory': parse_and_format_free_output(metrics.get('memory', 'N/A')),
         'global_variables': to_markdown_table(metrics.get('global_variables'))
     }
 
