@@ -94,4 +94,6 @@ LOG_TO_FILE = os.getenv('LOG_TO_FILE', 'True').lower() == 'true'  # Записы
 LOG_TO_CONSOLE = os.getenv('LOG_TO_CONSOLE', 'True').lower() == 'true'  # Выводить логи в консоль
 LOG_LEVEL = os.getenv('LOG_LEVEL', 'INFO').upper()  # Уровень логирования: DEBUG, INFO, WARNING, ERROR, CRITICAL
 
-MEMORY_MONITOR_INTERVAL_SECONDS = int(os.getenv('MEMORY_MONITOR_INTERVAL_SECONDS', 1800))  # 30 минут 
+MEMORY_MONITOR_INTERVAL_SECONDS = int(os.getenv('MEMORY_MONITOR_INTERVAL_SECONDS', 1800))  # 30 минут
+
+EMAIL_REPORT_TIMES = [t.strip() for t in os.getenv('EMAIL_REPORT_TIMES', '09:00,23:59').split(',') if t.strip()] 

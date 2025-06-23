@@ -18,7 +18,8 @@ from config.config import (
     EVENTS_REPORT_FILENAME_TEMPLATE,
     CONTINUOUS_MONITOR_INTERVAL_SECONDS,
     EMAIL_ENABLED,
-    MEMORY_MONITOR_INTERVAL_SECONDS
+    MEMORY_MONITOR_INTERVAL_SECONDS,
+    EMAIL_REPORT_TIMES
 )
 from core.email_utils import send_report_email, build_html_report_email
 
@@ -146,8 +147,8 @@ def main():
         continuous_monitoring(ssh_client, mysql_pid)
 
         if EMAIL_ENABLED:
-            schedule.every().day.at("23:59").do(send_daily_report)
-            schedule.every().day.at("09:00").do(send_daily_report)
+            for t in EMAIL_REPORT_TIMES:
+                schedule.every().day.at(t).do(send_daily_report)
 
         while True:
             schedule.run_pending()
