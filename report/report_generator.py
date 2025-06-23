@@ -120,69 +120,28 @@ def parse_innodb_status(status_string):
     # Fallback
     return status_string.replace('\\n', '\n').strip()
 
-def to_markdown_table(data_string):
-    """Безопасно конвертирует строку с TSV в Markdown таблицу."""
-    if not data_string or not isinstance(data_string, str):
-        return f"```\n{data_string or 'N/A'}\n```"
-    try:
-        # Обрабатываем стандартный вывод MySQL
-        lines = data_string.strip().splitlines()
-        if not lines:
-            return "```\n(пустой вывод)\n```"
-        
-        # Если это стандартный вывод MySQL (с символами +, -, |)
-        if lines and lines[0].startswith('+'):
-            # Извлекаем заголовок из первой строки с данными
-            header_line = None
-            data_lines = []
-            
-            for line in lines:
-                if line.startswith('|') and not line.startswith('+-'):
-                    if header_line is None:
-                        # Первая строка с | - это заголовок
-                        header_line = line
-                    else:
-                        # Остальные строки с | - это данные
-                        data_lines.append(line)
-            
-            if header_line and data_lines:
-                # Извлекаем заголовки
-                headers = [h.strip() for h in header_line.split('|')[1:-1]]
-                
-                # Извлекаем данные
-                table_data = []
-                for data_line in data_lines:
-                    row = [cell.strip() for cell in data_line.split('|')[1:-1]]
-                    if len(row) == len(headers):
-                        table_data.append(row)
-                
-                if table_data:
-                    df = pd.DataFrame(table_data, columns=headers)
-                    return df.to_markdown(index=False)
-        
-        # Fallback: пытаемся парсить как табулированный текст
-        clean_data = "\\n".join(line for line in data_string.strip().splitlines() if line.strip())
-        df = pd.read_csv(io.StringIO(clean_data), sep='\\t', engine='python')
-        
-        if df.empty:
-            return "```\n(пустой вывод)\n```"
-            
-        return df.to_markdown(index=False)
-    except Exception as e:
-        return f"```\n(ошибка форматирования: {e})\\n{data_string}\\n```"
+def to_markdown_table(data):
+    """Преобразует табличные данные (строка с табуляцией или markdown) в markdown-таблицу."""
+    if not data or not isinstance(data, str):
+        return data or ''
+    # Если есть табуляции, пробуем через pandas
+    if '\t' in data:
+        try:
+            df = pd.read_csv(io.StringIO(data), sep='\t', engine='python')
+            return df.to_markdown(index=False)
+        except Exception as e:
+            return f"```\n(ошибка парсинга таблицы: {e})\n{data}\n```"
+    return data
 
 def parse_and_format_free_output(free_output):
-    """Парсит вывод 'free -m' и форматирует его в виде двух таблиц."""
+    """Парсит вывод 'free -m' и форматирует его в виде markdown-таблицы и таблицы buffers/cache."""
     if not free_output or not isinstance(free_output, str):
         return f"```\n{free_output or 'N/A'}\n```"
     try:
         lines = free_output.strip().splitlines()
-        # Основная таблица
-        main_table_data = "\n".join(lines[:2] + [lines[3]] if len(lines) > 3 else lines[:2])
-        # Pandas плохо работает с первой строкой, так что переименуем ее для парсинга
-        main_table_data = main_table_data.replace("Mem:", "Mem", 1).replace("Swap:", "Swap", 1)
-        table1 = to_markdown_table(main_table_data, first_row_header=True)
-
+        # Основная таблица памяти
+        main_table = '\n'.join(lines[:3])
+        main_table_md = to_markdown_table(main_table)
         # Таблица для buffers/cache
         buffer_line = lines[2]
         buffer_parts = buffer_line.split()
@@ -193,8 +152,7 @@ def parse_and_format_free_output(free_output):
             {"Показатель": "Free (+buffers/cache)", "Значение (MB)": buffer_free}
         ])
         table2 = buffer_df.to_markdown(index=False)
-        
-        return f"{table1}\n\n**Расшифровка `-/+ buffers/cache`:**\n{table2}"
+        return f"{main_table_md}\n\n**Расшифровка `-/+ buffers/cache`:**\n{table2}"
     except Exception as e:
         return f"```\n(ошибка парсинга 'free -m': {e})\n{free_output}\n```"
 
