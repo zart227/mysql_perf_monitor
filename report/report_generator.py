@@ -5,6 +5,10 @@ import pandas as pd
 import io
 import re
 import logging
+from report.ai_prompt_utils import build_ai_prompt
+from core.ai_advisor import send_to_ai_advisor
+import collections
+from config.config import ENABLE_AI
 
 logger = logging.getLogger(__name__)
 
@@ -372,3 +376,159 @@ def check_if_memory_event_exists(report_path):
     with open(report_path, 'r', encoding='utf-8') as f:
         content = f.read()
     return 'Высокое потребление памяти' in content 
+
+def parse_and_aggregate_events(events_path):
+    """
+    Парсит events_report_YYYYMMDD.md и агрегирует:
+    - загрузку CPU (макс/мин/среднее)
+    - все запросы (группирует похожие по INFO)
+    - медленные/критические запросы (медленные >1 сек)
+    - статистику по времени выполнения
+    """
+    if not os.path.exists(events_path):
+        return {}
+    with open(events_path, encoding='utf-8') as f:
+        text = f.read()
+    # Парсим пики CPU
+    cpu_usages = []
+    all_queries = []
+    slow_queries = []
+    critical_queries = []
+    query_times = []
+    query_groups = collections.defaultdict(list)
+    # Находим все блоки "Пик CPU ..."
+    cpu_blocks = re.split(r'-{3,}', text)
+    for block in cpu_blocks:
+        cpu_match = re.search(r'Пик CPU.*?Зафиксированная нагрузка:\s*`([\d\.]+)%`', block)
+        if cpu_match:
+            cpu_usages.append(float(cpu_match.group(1)))
+        # Парсим таблицу запросов
+        table_match = re.search(r'\|\s*ID\s*\|.*?\n((?:\|.*?\n)+)', block, re.DOTALL)
+        if table_match:
+            table = table_match.group(1)
+            # Парсим строки таблицы
+            for line in table.strip().split('\n'):
+                if not line.strip().startswith('|'):
+                    continue
+                parts = [p.strip() for p in line.strip('|').split('|')]
+                if len(parts) < 7:
+                    continue
+                try:
+                    q_id, user, host, db, command, time_val, state, info = parts[:8]
+                    time_val = int(time_val)
+                    query = {
+                        'ID': q_id,
+                        'USER': user,
+                        'HOST': host,
+                        'DB': db,
+                        'COMMAND': command,
+                        'TIME': time_val,
+                        'STATE': state,
+                        'INFO': info
+                    }
+                    all_queries.append(query)
+                    query_times.append(time_val)
+                    # Группируем по INFO (обрезаем до 100 символов для группировки)
+                    group_key = info[:100]
+                    query_groups[group_key].append(query)
+                    if time_val > 30:
+                        critical_queries.append(query)
+                    elif time_val > 1:
+                        slow_queries.append(query)
+                except Exception:
+                    continue
+    # Агрегаты
+    cpu_agg = {
+        'max': max(cpu_usages) if cpu_usages else None,
+        'min': min(cpu_usages) if cpu_usages else None,
+        'avg': sum(cpu_usages)/len(cpu_usages) if cpu_usages else None,
+        'count': len(cpu_usages)
+    }
+    query_time_agg = {
+        'max': max(query_times) if query_times else None,
+        'min': min(query_times) if query_times else None,
+        'avg': sum(query_times)/len(query_times) if query_times else None,
+        'count': len(query_times)
+    }
+    # Группировка похожих запросов
+    grouped_queries = []
+    for key, group in query_groups.items():
+        grouped_queries.append({
+            'INFO': key,
+            'count': len(group),
+            'avg_time': sum(q['TIME'] for q in group)/len(group),
+            'max_time': max(q['TIME'] for q in group),
+            'min_time': min(q['TIME'] for q in group)
+        })
+    # Сортируем по количеству
+    grouped_queries = sorted(grouped_queries, key=lambda x: x['count'], reverse=True)
+    return {
+        'cpu_agg': cpu_agg,
+        'query_time_agg': query_time_agg,
+        'grouped_queries': grouped_queries,
+        'slow_queries': slow_queries,
+        'critical_queries': critical_queries
+    }
+
+def generate_daily_summary_report(baseline_path, events_path, output_path):
+    """
+    Генерирует итоговый дневной отчёт с AI-рекомендациями и агрегированной сводкой.
+    """
+    # Формируем промпт для AI
+    prompt = build_ai_prompt(baseline_path, events_path)
+    if ENABLE_AI:
+        try:
+            ai_recommendations = send_to_ai_advisor(prompt)
+        except Exception as e:
+            ai_recommendations = f"Ошибка при обращении к AI: {e}"
+    else:
+        ai_recommendations = 'AI отключён настройками.'
+    # Агрегируем события
+    agg = parse_and_aggregate_events(events_path)
+    # Формируем baseline-параметры (только ключевые, без полного baseline)
+    key_params = prompt.split('Вот сводка событий за сегодня:')[0].replace('Ты — опытный администратор MySQL. Вот ключевые параметры сервера:', '').strip()
+    # Формируем сводку
+    summary = []
+    cpu_agg = agg.get('cpu_agg', {})
+    if cpu_agg.get('count'):
+        summary.append(f"**CPU:** среднее: {cpu_agg['avg']:.1f}%, макс: {cpu_agg['max']}%, мин: {cpu_agg['min']}% (пиков: {cpu_agg['count']})")
+    query_time_agg = agg.get('query_time_agg', {})
+    if query_time_agg.get('count'):
+        summary.append(f"**Время выполнения запросов:** среднее: {query_time_agg['avg']:.1f} сек, макс: {query_time_agg['max']} сек, мин: {query_time_agg['min']} сек (всего: {query_time_agg['count']})")
+    # Похожие запросы
+    if agg.get('grouped_queries'):
+        summary.append("**Группы похожих запросов (по INFO):**")
+        for g in agg['grouped_queries'][:5]:
+            summary.append(f"- {g['INFO']} (всего: {g['count']}, среднее время: {g['avg_time']:.1f} сек, макс: {g['max_time']} сек, мин: {g['min_time']} сек)")
+    # Медленные и критические
+    if agg.get('critical_queries'):
+        summary.append("**Критически медленные запросы (>30 сек):**")
+        for q in agg['critical_queries']:
+            summary.append(f"- {q['INFO']} (время: {q['TIME']} сек)")
+    if agg.get('slow_queries'):
+        summary.append("**Медленные запросы (>10 сек):**")
+        for q in agg['slow_queries']:
+            summary.append(f"- {q['INFO']} (время: {q['TIME']} сек)")
+    # Все уникальные запросы (по INFO)
+    all_infos = set(q['INFO'] for q in agg.get('grouped_queries', []))
+    if all_infos:
+        summary.append("\n**Все уникальные запросы за день (по INFO):**")
+        for info in all_infos:
+            summary.append(f"- {info}")
+    summary_str = '\n'.join(summary)
+    # Итоговый markdown-отчёт
+    report = f"""
+# Сводный отчёт за {datetime.now().strftime('%Y-%m-%d')}
+
+## Ключевые параметры MySQL
+{key_params}
+
+## Итоговая сводка за день
+{summary_str}
+
+## AI-рекомендации (сгенерировано нейросетью)
+{ai_recommendations}
+"""
+    with open(output_path, 'w', encoding='utf-8') as f:
+        f.write(report)
+    return report 
