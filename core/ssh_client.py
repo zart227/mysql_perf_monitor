@@ -40,14 +40,14 @@ class SSHClient:
             logger.error(f"Не удалось переподключиться: {e}")
             return False
 
-    def exec_command(self, command, retries=1):
+    def exec_command(self, command, retries=1, timeout=10):
         if not self.is_connected():
             if not self.reconnect():
                 return None
         
         for attempt in range(retries + 1):
             try:
-                stdin, stdout, stderr = self.client.exec_command(command)
+                stdin, stdout, stderr = self.client.exec_command(command, timeout=timeout)
                 output = stdout.read().decode('utf-8')
                 error = stderr.read().decode('utf-8')
                 if error:
@@ -71,6 +71,9 @@ class SSHClient:
                 else:
                     logger.error("Превышено количество попыток переподключения после EOFError.")
                     return None
+            except socket.timeout as e:
+                logger.error(f"Таймаут при выполнении команды '{command}': {e}")
+                return None
             except Exception as e:
                 logger.error(f"Не удалось выполнить команду '{command}': {e}", exc_info=True)
                 return None

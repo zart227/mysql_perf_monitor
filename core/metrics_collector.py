@@ -9,11 +9,16 @@ class MetricsCollector:
         # Детектор пиков больше не создается здесь
 
     def _execute_command(self, command):
-        """Обертка для выполнения команды с логированием."""
+        """Обертка для выполнения команды с логированием и таймаутом."""
         if DEBUG_MODE:
             logger.info(f"Выполнение команды на удаленном сервере: '{command}'")
         try:
-            result = self.ssh.exec_command(command)
+            # Если это mysql-команда, добавляем таймауты
+            if command.strip().startswith('mysql '):
+                if '--connect-timeout=' not in command:
+                    command = command.replace('mysql ', 'mysql --connect-timeout=5 ', 1)
+                command = f"timeout 10s {command}"
+            result = self.ssh.exec_command(command, timeout=10)
             if result and 'Access denied' in result:
                 print("[CRITICAL] Ошибка MySQL: неверный логин или пароль. Проверьте переменные окружения в .env!")
                 logger.critical("Ошибка MySQL: неверный логин или пароль. Проверьте переменные окружения в .env!")

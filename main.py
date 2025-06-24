@@ -48,77 +48,79 @@ signal.signal(signal.SIGINT, handle_exit)
 def continuous_monitoring(ssh_client, mysql_pid):
     """
     Функция для непрерывного мониторинга CPU и памяти.
+    Добавлен heartbeat-лог и расширенная обработка ошибок.
     """
     try:
         logger.info(f"Запуск непрерывного мониторинга для PID: {mysql_pid} с интервалом {CONTINUOUS_MONITOR_INTERVAL_SECONDS} сек.")
         metrics_collector = MetricsCollector(ssh_client)
         last_memory_check = 0
+        last_heartbeat = 0
 
         while True:
-            start_time = time.time()
-            # 1. Мониторинг CPU (часто)
-            cpu_usage = metrics_collector.get_cpu_usage_for_pid(mysql_pid)
-            if cpu_usage is not None and cpu_usage > HIGH_FREQ_CPU_THRESHOLD:
-                logger.warning(f"Обнаружен всплеск CPU: {cpu_usage}%")
-                
-                # Собираем доп. информацию в момент пика с несколькими попытками
-                process_list = None
-                for attempt in range(3):  # 3 попытки
-                    process_list = metrics_collector.get_mysql_processlist()
-                    # Проверяем, что получили результат (не None и не пустая строка)
-                    if process_list and process_list.strip():
-                        # Если результат не содержит только разделители таблицы, считаем его валидным
-                        if not process_list.strip().startswith('+----') or len(process_list.strip().splitlines()) > 3:
-                            break  # Нашли непустой результат с данными
-                    time.sleep(1)  # Ждем 1 секунду перед следующей попыткой
-                
-                # Анализируем производительность запросов
-                performance_analysis = metrics_collector.analyze_query_performance(process_list)
-                
-                event_report_path = os.path.join(
-                    REPORTS_DIR,
-                    EVENTS_REPORT_FILENAME_TEMPLATE.format(date=datetime.now().strftime('%Y%m%d'))
-                )
-                append_cpu_event_to_report(
-                    {
-                        'time': datetime.now().strftime('%H:%M:%S'), 
-                        'cpu': cpu_usage, 
-                        'pid': mysql_pid,
-                        'process_list': process_list,
-                        'performance_analysis': performance_analysis
-                    }, 
-                    event_report_path
-                )
-
-            # 2. Мониторинг памяти (раз в MEMORY_MONITOR_INTERVAL_SECONDS)
-            now = time.time()
-            if now - last_memory_check >= MEMORY_MONITOR_INTERVAL_SECONDS:
-                memory_usage = metrics_collector.get_memory_usage_percent()
-                analyzer = Analyzer({}, []) # Анализатор используется только для порогов
-                memory_threshold = analyzer.memory_threshold
-
-                if memory_usage is not None and memory_usage > memory_threshold:
+            try:
+                start_time = time.time()
+                # 1. Мониторинг CPU (часто)
+                cpu_usage = metrics_collector.get_cpu_usage_for_pid(mysql_pid)
+                if cpu_usage is not None and cpu_usage > HIGH_FREQ_CPU_THRESHOLD:
+                    logger.warning(f"Обнаружен всплеск CPU: {cpu_usage}%")
+                    # Собираем доп. информацию в момент пика с несколькими попытками
+                    process_list = None
+                    for attempt in range(3):  # 3 попытки
+                        process_list = metrics_collector.get_mysql_processlist()
+                        if process_list and process_list.strip():
+                            if not process_list.strip().startswith('+----') or len(process_list.strip().splitlines()) > 3:
+                                break
+                        time.sleep(1)
+                    performance_analysis = metrics_collector.analyze_query_performance(process_list)
                     event_report_path = os.path.join(
                         REPORTS_DIR,
                         EVENTS_REPORT_FILENAME_TEMPLATE.format(date=datetime.now().strftime('%Y%m%d'))
                     )
-                    if not check_if_memory_event_exists(event_report_path):
-                        append_memory_event_to_report(
-                            {'time': datetime.now().strftime('%H:%M:%S'), 'memory_percent': memory_usage},
-                            event_report_path
-                        )
-                        logger.warning(f"Информация о памяти добавлена в {event_report_path}")
-                    # else:
-                    #     logger.info("Событие о высоком потреблении памяти уже записано сегодня. Пропускаю.")
-                last_memory_check = now
-
-            # Ждем до следующей итерации CPU
-            elapsed = time.time() - start_time
-            sleep_time = max(0, CONTINUOUS_MONITOR_INTERVAL_SECONDS - elapsed)
-            time.sleep(sleep_time)
-
+                    append_cpu_event_to_report(
+                        {
+                            'time': datetime.now().strftime('%H:%M:%S'), 
+                            'cpu': cpu_usage, 
+                            'pid': mysql_pid,
+                            'process_list': process_list,
+                            'performance_analysis': performance_analysis
+                        }, 
+                        event_report_path
+                    )
+                # 2. Мониторинг памяти (раз в MEMORY_MONITOR_INTERVAL_SECONDS)
+                now = time.time()
+                if now - last_memory_check >= MEMORY_MONITOR_INTERVAL_SECONDS:
+                    try:
+                        memory_usage = metrics_collector.get_memory_usage_percent()
+                        analyzer = Analyzer({}, [])
+                        memory_threshold = analyzer.memory_threshold
+                        if memory_usage is not None and memory_usage > memory_threshold:
+                            event_report_path = os.path.join(
+                                REPORTS_DIR,
+                                EVENTS_REPORT_FILENAME_TEMPLATE.format(date=datetime.now().strftime('%Y%m%d'))
+                            )
+                            if not check_if_memory_event_exists(event_report_path):
+                                append_memory_event_to_report(
+                                    {'time': datetime.now().strftime('%H:%M:%S'), 'memory_percent': memory_usage},
+                                    event_report_path
+                                )
+                                logger.warning(f"Информация о памяти добавлена в {event_report_path}")
+                    except Exception as e:
+                        logger.error(f"Ошибка при мониторинге памяти: {e}", exc_info=True)
+                    last_memory_check = now
+                # Heartbeat лог раз в минуту
+                if now - last_heartbeat >= 60:
+                    logger.info(f"HEARTBEAT: сервис работает, PID: {mysql_pid}, время: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
+                    last_heartbeat = now
+                # Ждем до следующей итерации CPU
+                elapsed = time.time() - start_time
+                sleep_time = max(0, CONTINUOUS_MONITOR_INTERVAL_SECONDS - elapsed)
+                time.sleep(sleep_time)
+            except Exception as e:
+                logger.error(f"Ошибка в цикле мониторинга: {e}", exc_info=True)
     except KeyboardInterrupt:
         logger.info("Получен сигнал KeyboardInterrupt. Завершаю непрерывный мониторинг.")
+    except Exception as e:
+        logger.error(f"Критическая ошибка в continuous_monitoring: {e}", exc_info=True)
 
 def send_daily_report():
     today = datetime.now().strftime('%Y%m%d')
