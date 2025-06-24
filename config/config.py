@@ -96,4 +96,12 @@ LOG_LEVEL = os.getenv('LOG_LEVEL', 'INFO').upper()  # Уровень логир�
 
 MEMORY_MONITOR_INTERVAL_SECONDS = int(os.getenv('MEMORY_MONITOR_INTERVAL_SECONDS', 1800))  # 30 минут
 
-EMAIL_REPORT_TIMES = [t.strip() for t in os.getenv('EMAIL_REPORT_TIMES', '09:00,23:59').split(',') if t.strip()] 
+EMAIL_REPORT_TIMES = [t.strip() for t in os.getenv('EMAIL_REPORT_TIMES', '09:00,23:59').split(',') if t.strip()]
+
+OPENAI_API_KEY = os.getenv('OPENAI_API_KEY', '')
+OPENAI_API_URL = os.getenv('OPENAI_API_URL', 'https://api.openai.com/v1/chat/completions')
+OPENAI_MODEL = os.getenv('OPENAI_MODEL', 'gpt-3.5-turbo')
+
+# Флаги для отключения AI и прокси
+ENABLE_AI = False  # Отключить AI-советник
+ENABLE_PROXY = False  # Отключить прокси 
