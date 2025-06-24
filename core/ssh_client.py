@@ -1,6 +1,7 @@
 import paramiko
 from config.config import SSH_CONFIG
 from core.logger import logger
+import socket
 
 class SSHClient:
     def __init__(self):
@@ -60,7 +61,16 @@ class SSHClient:
                         return None
                 else:
                     logger.error("Превышено количество попыток переподключения.")
-                    raise e # Передаем исключение наверх после всех попыток
+                    raise e
+            except EOFError as e:
+                logger.warning(f"EOFError при выполнении команды (попытка {attempt + 1}): {e}")
+                if attempt < retries:
+                    if not self.reconnect():
+                        logger.error("Не удалось переподключиться после EOFError. Прерываю попытки.")
+                        return None
+                else:
+                    logger.error("Превышено количество попыток переподключения после EOFError.")
+                    return None
             except Exception as e:
                 logger.error(f"Не удалось выполнить команду '{command}': {e}", exc_info=True)
                 return None
