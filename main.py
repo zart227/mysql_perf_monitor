@@ -5,11 +5,12 @@ import paramiko
 import sys
 import schedule
 import signal
+import threading
 
 from core.ssh_client import SSHClient
 from core.metrics_collector import MetricsCollector
 from core.analyzer import Analyzer
-from report.report_generator import generate_baseline_report, append_cpu_event_to_report, append_memory_event_to_report, check_if_memory_event_exists
+from report.report_generator import generate_baseline_report, append_cpu_event_to_report, append_memory_event_to_report, check_if_memory_event_exists, generate_daily_summary_report
 from core.logger import logger
 from config.config import (
     SSH_HOST, SSH_PORT, SSH_USER, SSH_PASSWORD,
@@ -20,7 +21,9 @@ from config.config import (
     CONTINUOUS_MONITOR_INTERVAL_SECONDS,
     EMAIL_ENABLED,
     MEMORY_MONITOR_INTERVAL_SECONDS,
-    EMAIL_REPORT_TIMES
+    EMAIL_REPORT_TIMES,
+    ENABLE_AI,
+    ENABLE_PROXY
 )
 from core.email_utils import send_report_email, build_html_report_email
 
@@ -119,15 +122,18 @@ def continuous_monitoring(ssh_client, mysql_pid):
 
 def send_daily_report():
     today = datetime.now().strftime('%Y%m%d')
-    report_path = os.path.join(REPORTS_DIR, EVENTS_REPORT_FILENAME_TEMPLATE.format(date=today))
-    if os.path.exists(report_path):
+    baseline_path = os.path.join(REPORTS_DIR, BASELINE_REPORT_FILENAME)
+    events_path = os.path.join(REPORTS_DIR, EVENTS_REPORT_FILENAME_TEMPLATE.format(date=today))
+    summary_path = os.path.join(REPORTS_DIR, f'daily_summary_{today}.md')
+    if os.path.exists(baseline_path) and os.path.exists(events_path):
+        generate_daily_summary_report(baseline_path, events_path, summary_path)
         send_report_email(
-            subject=f"MySQL Perf Report {today}",
-            body=f"Автоматический отчет о событиях MySQL за {today}",
-            attachment_path=report_path
+            subject=f"MySQL Perf Daily Summary {today}",
+            body=f"Автоматический сводный отчет MySQL за {today}",
+            attachment_path=summary_path
         )
     else:
-        logger.warning(f"Файл отчета не найден для отправки: {report_path}")
+        logger.warning(f"Файлы baseline или событийного отчёта не найдены для отправки: {baseline_path}, {events_path}")
 
 def main():
     global ssh_client
@@ -153,14 +159,16 @@ def main():
         
         logger.info("="*30)
 
-        # --- Этап 2: Непрерывный мониторинг ---
+        # --- Этап 2: Непрерывный мониторинг в отдельном потоке ---
         mysql_pid = metrics_collector.get_mysqld_pid()
         if not mysql_pid:
             logger.error("Не удалось получить PID процесса mysqld. Непрерывный мониторинг невозможен.")
             return
 
-        continuous_monitoring(ssh_client, mysql_pid)
+        monitor_thread = threading.Thread(target=continuous_monitoring, args=(ssh_client, mysql_pid), daemon=True)
+        monitor_thread.start()
 
+        # Планировщик email-отчётов
         if EMAIL_ENABLED:
             for t in EMAIL_REPORT_TIMES:
                 schedule.every().day.at(t).do(send_daily_report)
@@ -204,4 +212,62 @@ if __name__ == '__main__':
         except Exception as e:
             print(f"[EMAIL ERROR] {e}")
         sys.exit(0)
-    main() 
+    elif '--send-report-for' in sys.argv:
+        # Пример: python main.py --send-report-for 20250623
+        idx = sys.argv.index('--send-report-for')
+        if len(sys.argv) > idx + 1:
+            date_str = sys.argv[idx + 1]
+            report_path = os.path.join(REPORTS_DIR, EVENTS_REPORT_FILENAME_TEMPLATE.format(date=date_str))
+            html_body = build_html_report_email(date_str)
+            try:
+                send_report_email(
+                    subject=f"MySQL Perf Report {date_str}",
+                    body=f"Автоматический отчет о событиях MySQL за {date_str}",
+                    attachment_path=report_path,
+                    html_body=html_body
+                )
+                print(f"Письмо за {date_str} отправлено успешно!")
+            except Exception as e:
+                print(f"[EMAIL ERROR] {e}")
+        else:
+            print('Укажите дату для отправки отчёта (например, 20250623)')
+        sys.exit(0)
+    elif '--ai-test' in sys.argv:
+        if ENABLE_AI:
+            from core.ai_advisor import send_to_ai_advisor
+            # Ручная отправка отчёта в AI
+            report_path = None
+            for i, arg in enumerate(sys.argv):
+                if arg == '--report' and i + 1 < len(sys.argv):
+                    report_path = sys.argv[i + 1]
+            if not report_path:
+                today = datetime.now().strftime('%Y%m%d')
+                report_path = os.path.join(REPORTS_DIR, f'daily_summary_{today}.md')
+            if not os.path.exists(report_path):
+                print(f"Файл отчёта не найден: {report_path}")
+                sys.exit(1)
+            with open(report_path, encoding='utf-8') as f:
+                prompt = f.read()
+            print(f'Отправляю содержимое {report_path} в AI...')
+            result = send_to_ai_advisor(prompt)
+            print('Ответ AI:')
+            print(result)
+        else:
+            print('AI отключён настройками.')
+        sys.exit(0)
+    elif '--generate-summary' in sys.argv:
+        # Пример: python main.py --generate-summary 20250623
+        idx = sys.argv.index('--generate-summary')
+        if len(sys.argv) > idx + 1:
+            date_str = sys.argv[idx + 1]
+            events_path = os.path.join(REPORTS_DIR, f'events_report_{date_str}.md')
+            baseline_path = os.path.join(REPORTS_DIR, 'baseline_report.md')
+            summary_path = os.path.join(REPORTS_DIR, f'daily_summary_{date_str}.md')
+            from report.report_generator import generate_daily_summary_report
+            report = generate_daily_summary_report(baseline_path, events_path, summary_path)
+            print(f'Сводный отчёт сохранён: {summary_path}')
+        else:
+            print('Укажите дату для генерации summary-отчёта (например, 20250623)')
+        sys.exit(0)
+    else:
+        main() 
