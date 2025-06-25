@@ -30,16 +30,37 @@ def find_last_heartbeat():
         return None
 
 def kill_main_process():
-    # Находим PID процесса python main.py
+    # Используем /proc для поиска процессов вместо ps
     import subprocess
     try:
-        out = subprocess.check_output(["ps", "aux"]).decode()
-        for line in out.splitlines():
-            if 'python' in line and 'main.py' in line and 'watchdog' not in line:
-                pid = int(line.split()[1])
-                print(f"[WATCHDOG] Завершаю процесс main.py, PID={pid}")
-                os.kill(pid, 9)
-                return True
+        # Сначала пробуем найти процесс через /proc
+        for pid_dir in os.listdir('/proc'):
+            if pid_dir.isdigit():
+                try:
+                    cmdline_path = f'/proc/{pid_dir}/cmdline'
+                    if os.path.exists(cmdline_path):
+                        with open(cmdline_path, 'r') as f:
+                            cmdline = f.read()
+                            if 'python' in cmdline and 'main.py' in cmdline and 'watchdog' not in cmdline:
+                                pid = int(pid_dir)
+                                print(f"[WATCHDOG] Завершаю процесс main.py, PID={pid}")
+                                os.kill(pid, 9)
+                                return True
+                except (IOError, OSError, ValueError):
+                    continue
+        
+        # Если не нашли через /proc, пробуем через ps (если доступен)
+        try:
+            out = subprocess.check_output(["ps", "aux"]).decode()
+            for line in out.splitlines():
+                if 'python' in line and 'main.py' in line and 'watchdog' not in line:
+                    pid = int(line.split()[1])
+                    print(f"[WATCHDOG] Завершаю процесс main.py, PID={pid}")
+                    os.kill(pid, 9)
+                    return True
+        except (subprocess.CalledProcessError, FileNotFoundError):
+            pass
+            
         print("[WATCHDOG] Не найден процесс main.py для завершения.")
         return False
     except Exception as e:

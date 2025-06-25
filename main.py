@@ -175,8 +175,18 @@ def main():
             for t in EMAIL_REPORT_TIMES:
                 schedule.every().day.at(t).do(send_daily_report)
 
+        # Heartbeat в основном потоке
+        last_main_heartbeat = time.time()
+        
         while True:
             schedule.run_pending()
+            
+            # Heartbeat каждые 30 секунд в основном потоке
+            now = time.time()
+            if now - last_main_heartbeat >= 30:
+                logger.info(f"HEARTBEAT: основной поток работает, время: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
+                last_main_heartbeat = now
+                
             time.sleep(30)
 
     except paramiko.ssh_exception.AuthenticationException:
