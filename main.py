@@ -13,18 +13,17 @@ from report.report_generator import (
     append_memory_event_to_report, check_if_memory_event_exists,
     generate_daily_summary_report
 )
-from core.logger import logger, setup_logging
+from core.logger import logger
 from config.config import (
     SSH_HOST, SSH_PORT, SSH_USER, SSH_PASSWORD,
     REPORTS_DIR, BASELINE_REPORT_FILENAME, EVENTS_REPORT_FILENAME_TEMPLATE,
     HIGH_FREQ_CPU_THRESHOLD, HIGH_FREQ_MEMORY_THRESHOLD,
     CONTINUOUS_MONITOR_INTERVAL_SECONDS, MEMORY_MONITOR_INTERVAL_SECONDS,
-    EMAIL_ENABLED, EMAIL_REPORT_TIMES
+    EMAIL_ENABLED, EMAIL_REPORT_TIMES, SSH_CONFIG
 )
 from core.email_utils import send_report_email
 
 # Настройка логирования
-setup_logging()
 ssh_client_global = None
 
 def handle_exit(signum, frame):
@@ -107,9 +106,9 @@ def main():
     global ssh_client_global
     
     try:
-        ssh_client_global = SSHClient(host=SSH_HOST, port=SSH_PORT, user=SSH_USER, password=SSH_PASSWORD)
+        ssh_client_global = SSHClient()
         ssh_client_global.connect()
-        logger.info(f"SSH подключение к {SSH_HOST} успешно установлено.")
+        logger.info(f"SSH подключение к {SSH_CONFIG['host']} успешно установлено.")
 
         mysql_pid = MetricsCollector(ssh_client_global).get_mysqld_pid()
         if not mysql_pid:
