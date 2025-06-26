@@ -299,7 +299,11 @@ def append_cpu_event_to_report(event_data, report_path):
     import re
     try:
         os.makedirs(os.path.dirname(report_path), exist_ok=True)
-        csv_path = os.path.join(os.path.dirname(report_path), 'events_cpu.csv')
+        # Новый путь для событий по дням
+        events_dir = os.path.join(os.path.dirname(report_path), 'events', 'cpu')
+        os.makedirs(events_dir, exist_ok=True)
+        date_str = datetime.now().strftime('%Y-%m-%d')
+        csv_path = os.path.join(events_dir, f'{date_str}.csv')
         csv_exists = os.path.exists(csv_path)
         process_list = event_data.get('process_list', '')
         # --- Парсим process_list для CSV ---
