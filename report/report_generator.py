@@ -603,11 +603,17 @@ def generate_daily_summary_report(baseline_path, events_path, output_path):
             top_long_str = '\n'.join([
                 f"  - {row['user']}@{row['host']} ({row['time_query']} сек): {str(row['info'])[:100]}..." for _, row in top_long.iterrows()
             ])
-            # Топ-5 частых запросов (по info)
-            top_freq = df['info'].value_counts().head(5)
+            # Топ-5 частых запросов (по info) с средней загрузкой CPU
+            top_freq_df = df.groupby('info').agg(
+                count=('info', 'size'),
+                avg_cpu=('cpu', 'mean')
+            ).sort_values('count', ascending=False).head(5)
+
             top_freq_str = '\n'.join([
-                f"  - {info[:100]}... (всего: {count})" for info, count in top_freq.items()
+                f"  - {info[:100]}... (всего: {row['count']}, ср. CPU: {row['avg_cpu']:.1f}%)" 
+                for info, row in top_freq_df.iterrows()
             ])
+
             cpu_summary += f"\n{query_time_agg}\n**Топ-5 долгих запросов:**\n{top_long_str}\n\n**Топ-5 частых запросов:**\n{top_freq_str}\n"
     if os.path.exists(mem_csv):
         dfm = pd.read_csv(mem_csv)
