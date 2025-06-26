@@ -9,6 +9,7 @@ from report.ai_prompt_utils import build_ai_prompt
 from core.ai_advisor import send_to_ai_advisor
 import collections
 from config.config import ENABLE_AI
+import csv
 
 logger = logging.getLogger(__name__)
 
@@ -292,24 +293,87 @@ def _ensure_header(report_path):
             f.write('\n')
 
 def append_cpu_event_to_report(event_data, report_path):
-    """Добавляет информацию о пике CPU в отчет о событиях."""
+    """
+    Добавляет информацию о пике CPU в отчет о событиях (markdown, как раньше) и в CSV (плоский формат: одна строка на каждый запрос, info без переносов строк).
+    """
+    import re
     try:
-        # Создаем директорию, если её нет
         os.makedirs(os.path.dirname(report_path), exist_ok=True)
-        
-        # Проверяем, существует ли файл
+        csv_path = os.path.join(os.path.dirname(report_path), 'events_cpu.csv')
+        csv_exists = os.path.exists(csv_path)
+        process_list = event_data.get('process_list', '')
+        # --- Парсим process_list для CSV ---
+        queries = []
+        if process_list and process_list.strip():
+            lines = process_list.strip().splitlines()
+            header_line = None
+            for line in lines:
+                if line.startswith('|') and 'INFO' in line.upper():
+                    header_line = [h.strip().upper() for h in line.split('|')[1:-1]]
+                    break
+            
+            if header_line:
+                try:
+                    # Находим индексы нужных столбцов
+                    user_idx = header_line.index('USER')
+                    host_idx = header_line.index('HOST')
+                    time_idx = header_line.index('TIME')
+                    info_idx = header_line.index('INFO')
+
+                    for line in lines:
+                        if line.startswith('|') and not line.startswith('+-') and 'USER' not in line.upper():
+                            parts = [p.strip() for p in line.split('|')[1:-1]]
+                            if len(parts) > max(user_idx, host_idx, time_idx, info_idx):
+                                user = parts[user_idx]
+                                host = parts[host_idx]
+                                time_val = parts[time_idx]
+                                info = parts[info_idx].replace('\n', ' ').replace('\r', ' ')
+                                info = re.sub(r'\s+', ' ', info)
+                                if info and info != 'NULL':
+                                    queries.append({'user': user, 'host': host, 'time_query': time_val, 'info': info})
+                except ValueError:
+                    logger.warning("Не удалось найти все необходимые столбцы (USER, HOST, TIME, INFO) в выводе processlist.")
+                except Exception as e:
+                    logger.error(f"Ошибка при парсинге processlist: {e}", exc_info=True)
+
+
+        # --- Запись в CSV ---
+        if queries:
+            with open(csv_path, 'a', newline='', encoding='utf-8') as csvfile:
+                fieldnames = ['date', 'time', 'pid', 'cpu', 'user', 'host', 'time_query', 'info']
+                writer = csv.DictWriter(csvfile, fieldnames=fieldnames, quoting=csv.QUOTE_ALL)
+                if not csv_exists:
+                    writer.writeheader()
+                for q in queries:
+                    writer.writerow({
+                        'date': datetime.now().strftime('%Y-%m-%d'),
+                        'time': event_data['time'],
+                        'pid': event_data['pid'],
+                        'cpu': event_data['cpu'],
+                        'user': q['user'],
+                        'host': q['host'],
+                        'time_query': q['time_query'],
+                        'info': q['info'],
+                    })
+        # --- Markdown-отчёт (как раньше) ---
         if not os.path.exists(report_path):
             with open(report_path, 'w', encoding='utf-8') as f:
                 f.write("# 📊 Отчет о событиях мониторинга MySQL\n\n")
-        
-        # Форматируем данные события
         time_str = event_data['time']
         cpu_usage = event_data['cpu']
         pid = event_data['pid']
-        process_list = event_data.get('process_list', '')
-        performance_analysis = event_data.get('performance_analysis')
-        
-        # Создаем запись о событии
+        # Если process_list — таблица, вставляем её как есть, иначе пишем 'Нет активных запросов.'
+        if process_list and process_list.strip().startswith('+'):
+            processlist_md = f'''```
+{process_list.strip()}
+```'''
+        elif queries:
+            # fallback: если таблица не распознана, но есть распарсенные запросы
+            processlist_md = '| user | host | time | info |\n|---|---|---|---|\n' + '\n'.join(
+                f"| {q['user']} | {q['host']} | {q['time_query']} | {q['info'][:100]}... |" for q in queries
+            )
+        else:
+            processlist_md = 'Нет активных запросов.'
         event_entry = f"""
 ---
 ### 📈 Пик CPU в {time_str}
@@ -317,11 +381,10 @@ def append_cpu_event_to_report(event_data, report_path):
 - **Зафиксированная нагрузка:** `{cpu_usage}%`
 
 **Топ-5 запросов по времени выполнения в момент пика:**
-{to_markdown_table(process_list)}
+{processlist_md}
 
 """
-        
-        # Добавляем анализ производительности, если есть данные
+        performance_analysis = event_data.get('performance_analysis')
         if performance_analysis:
             event_entry += f"""
 **📊 Анализ производительности запросов:**
@@ -332,40 +395,46 @@ def append_cpu_event_to_report(event_data, report_path):
 - **Критически медленных запросов (>30 сек):** {len(performance_analysis['critical_queries'])}
 
 """
-            
-            # Показываем критически медленные запросы
             if performance_analysis['critical_queries']:
                 event_entry += "**🚨 Критически медленные запросы (>30 сек):**\n"
                 for query in performance_analysis['critical_queries']:
-                    event_entry += f"- **{query['TIME']} сек:** {query.get('INFO', 'N/A')[:100]}...\n"
+                    info = str(query.get('INFO', 'N/A')).replace('\n', ' ').replace('\r', ' ')
+                    info = re.sub(r'\s+', ' ', info)
+                    event_entry += f"- **{query['TIME']} сек:** {info[:100]}...\n"
                 event_entry += "\n"
-            
-            # Показываем медленные запросы
             elif performance_analysis['slow_queries']:
                 event_entry += "**⚠️ Медленные запросы (>10 сек):**\n"
                 for query in performance_analysis['slow_queries']:
-                    event_entry += f"- **{query['TIME']} сек:** {query.get('INFO', 'N/A')[:100]}...\n"
+                    info = str(query.get('INFO', 'N/A')).replace('\n', ' ').replace('\r', ' ')
+                    info = re.sub(r'\s+', ' ', info)
+                    event_entry += f"- **{query['TIME']} сек:** {info[:100]}...\n"
                 event_entry += "\n"
-        
-        # Добавляем запись в файл
         with open(report_path, 'a', encoding='utf-8') as f:
             f.write(event_entry)
-            
         logger.info(f"Информация о пике CPU добавлена в отчет: {report_path}")
-        
     except Exception as e:
         logger.error(f"Ошибка при добавлении информации о пике CPU в отчет: {e}", exc_info=True)
 
 def append_memory_event_to_report(event_data, output_path):
-    """Добавляет в отчет событие о высоком потреблении памяти."""
+    """Добавляет в отчет событие о высоком потреблении памяти и в CSV."""
     _ensure_header(output_path)
-    
+    # CSV-файл для памяти
+    csv_path = os.path.join(os.path.dirname(output_path), 'events_memory.csv')
+    csv_exists = os.path.exists(csv_path)
+    with open(csv_path, 'a', newline='', encoding='utf-8') as csvfile:
+        writer = csv.writer(csvfile, quoting=csv.QUOTE_ALL)
+        if not csv_exists:
+            writer.writerow(['date', 'time', 'memory_percent'])
+        writer.writerow([
+            datetime.now().strftime('%Y-%m-%d'),
+            event_data['time'],
+            event_data['memory_percent']
+        ])
     template = Template(MEMORY_EVENT_TEMPLATE)
     report_content = template.render(
         time=event_data['time'],
         memory_percent=event_data['memory_percent']
     )
-    
     with open(output_path, 'a', encoding='utf-8') as f:
         f.write(report_content)
 
@@ -386,9 +455,14 @@ def parse_and_aggregate_events(events_path):
     - статистику по времени выполнения
     """
     if not os.path.exists(events_path):
+        logger.warning(f"Файл событий не найден: {events_path}")
         return {}
+    
     with open(events_path, encoding='utf-8') as f:
         text = f.read()
+    
+    logger.info(f"Парсинг файла событий: {events_path}, размер: {len(text)} символов")
+    
     # Парсим пики CPU
     cpu_usages = []
     all_queries = []
@@ -396,47 +470,60 @@ def parse_and_aggregate_events(events_path):
     critical_queries = []
     query_times = []
     query_groups = collections.defaultdict(list)
-    # Находим все блоки "Пик CPU ..."
-    cpu_blocks = re.split(r'-{3,}', text)
-    for block in cpu_blocks:
-        cpu_match = re.search(r'Пик CPU.*?Зафиксированная нагрузка:\s*`([\d\.]+)%`', block)
-        if cpu_match:
-            cpu_usages.append(float(cpu_match.group(1)))
-        # Парсим таблицу запросов
-        table_match = re.search(r'\|\s*ID\s*\|.*?\n((?:\|.*?\n)+)', block, re.DOTALL)
-        if table_match:
-            table = table_match.group(1)
-            # Парсим строки таблицы
-            for line in table.strip().split('\n'):
-                if not line.strip().startswith('|'):
-                    continue
-                parts = [p.strip() for p in line.strip('|').split('|')]
-                if len(parts) < 7:
-                    continue
-                try:
-                    q_id, user, host, db, command, time_val, state, info = parts[:8]
-                    time_val = int(time_val)
-                    query = {
-                        'ID': q_id,
-                        'USER': user,
-                        'HOST': host,
-                        'DB': db,
-                        'COMMAND': command,
-                        'TIME': time_val,
-                        'STATE': state,
-                        'INFO': info
-                    }
-                    all_queries.append(query)
-                    query_times.append(time_val)
-                    # Группируем по INFO (обрезаем до 100 символов для группировки)
-                    group_key = info[:100]
-                    query_groups[group_key].append(query)
-                    if time_val > 30:
-                        critical_queries.append(query)
-                    elif time_val > 1:
-                        slow_queries.append(query)
-                except Exception:
-                    continue
+    
+    # Ищем все пики CPU по заголовкам ### 📈 Пик CPU
+    cpu_peaks = re.findall(r'### 📈 Пик CPU в (\d{2}:\d{2}:\d{2})[\s\S]*?Зафиксированная нагрузка:\s*`([\d\.]+)%`', text)
+    logger.info(f"Найдено пиков CPU по заголовкам: {len(cpu_peaks)}")
+    
+    for time_str, cpu_usage in cpu_peaks:
+        cpu_usage = float(cpu_usage)
+        cpu_usages.append(cpu_usage)
+        logger.info(f"Найден пик CPU в {time_str}: {cpu_usage}%")
+    
+    # Ищем таблицы запросов
+    table_matches = re.findall(r'\|\s*ID\s*\|.*?\n((?:\|.*?\n)+)', text, re.DOTALL)
+    logger.info(f"Найдено таблиц запросов: {len(table_matches)}")
+    
+    for i, table in enumerate(table_matches):
+        logger.info(f"Обрабатываю таблицу {i+1}")
+        # Парсим строки таблицы
+        for line in table.strip().split('\n'):
+            if not line.strip().startswith('|'):
+                continue
+            parts = [p.strip() for p in line.strip('|').split('|')]
+            if len(parts) < 7:
+                continue
+            try:
+                q_id, user, host, db, command, time_val, state, info = parts[:8]
+                time_val = int(time_val)
+                query = {
+                    'ID': q_id,
+                    'USER': user,
+                    'HOST': host,
+                    'DB': db,
+                    'COMMAND': command,
+                    'TIME': time_val,
+                    'STATE': state,
+                    'INFO': info
+                }
+                all_queries.append(query)
+                query_times.append(time_val)
+                # Группируем по INFO (обрезаем до 100 символов для группировки)
+                group_key = info[:100]
+                query_groups[group_key].append(query)
+                if time_val > 30:
+                    critical_queries.append(query)
+                elif time_val > 1:
+                    slow_queries.append(query)
+            except Exception as e:
+                logger.debug(f"Ошибка парсинга строки таблицы: {e}")
+                continue
+    
+    logger.info(f"Найдено пиков CPU: {len(cpu_usages)}")
+    logger.info(f"Найдено запросов: {len(all_queries)}")
+    logger.info(f"Медленных запросов: {len(slow_queries)}")
+    logger.info(f"Критических запросов: {len(critical_queries)}")
+    
     # Агрегаты
     cpu_agg = {
         'max': max(cpu_usages) if cpu_usages else None,
@@ -473,7 +560,11 @@ def parse_and_aggregate_events(events_path):
 def generate_daily_summary_report(baseline_path, events_path, output_path):
     """
     Генерирует итоговый дневной отчёт с AI-рекомендациями и агрегированной сводкой.
+    Теперь всегда использует events_cpu.csv (плоский формат) для CPU и запросов.
     """
+    import pandas as pd
+    today = datetime.now().strftime('%Y-%m-%d')
+    date_str = today
     # Формируем промпт для AI
     prompt = build_ai_prompt(baseline_path, events_path)
     if ENABLE_AI:
@@ -483,42 +574,58 @@ def generate_daily_summary_report(baseline_path, events_path, output_path):
             ai_recommendations = f"Ошибка при обращении к AI: {e}"
     else:
         ai_recommendations = 'AI отключён настройками.'
-    # Агрегируем события
-    agg = parse_and_aggregate_events(events_path)
+    # --- Новый блок: читаем только events_cpu.csv ---
+    cpu_csv = os.path.join(os.path.dirname(events_path), 'events_cpu.csv')
+    mem_csv = os.path.join(os.path.dirname(events_path), 'events_memory.csv')
+    cpu_summary = ''
+    mem_summary = ''
+    if os.path.exists(cpu_csv):
+        df = pd.read_csv(cpu_csv)
+        df = df[df['date'] == date_str]
+        if not df.empty:
+            cpu_summary = (
+                f"**CPU:**\n"
+                f"  - Количество запросов: {len(df)}\n"
+                f"  - Среднее значение CPU: {df['cpu'].mean():.1f}%\n"
+                f"  - Максимум: {df['cpu'].max()}%\n"
+                f"  - Минимум: {df['cpu'].min()}%\n"
+            )
+            # Статистика по времени выполнения запросов
+            df['time_query'] = pd.to_numeric(df['time_query'], errors='coerce').fillna(0)
+            query_time_agg = (
+                f"**Время выполнения запросов:**\n"
+                f"  - Среднее: {df['time_query'].mean():.1f} сек\n"
+                f"  - Максимум: {df['time_query'].max()} сек\n"
+                f"  - Минимум: {df['time_query'].min()} сек\n"
+            )
+            # Топ-5 долгих запросов
+            top_long = df.sort_values('time_query', ascending=False).head(5)
+            top_long_str = '\n'.join([
+                f"  - {row['user']}@{row['host']} ({row['time_query']} сек): {str(row['info'])[:100]}..." for _, row in top_long.iterrows()
+            ])
+            # Топ-5 частых запросов (по info)
+            top_freq = df['info'].value_counts().head(5)
+            top_freq_str = '\n'.join([
+                f"  - {info[:100]}... (всего: {count})" for info, count in top_freq.items()
+            ])
+            cpu_summary += f"\n{query_time_agg}\n**Топ-5 долгих запросов:**\n{top_long_str}\n\n**Топ-5 частых запросов:**\n{top_freq_str}\n"
+    if os.path.exists(mem_csv):
+        dfm = pd.read_csv(mem_csv)
+        dfm = dfm[dfm['date'] == date_str]
+        if not dfm.empty:
+            mem_summary = (
+                f"**Память:**\n"
+                f"  - Количество событий: {len(dfm)}\n"
+                f"  - Среднее значение: {dfm['memory_percent'].mean():.1f}%\n"
+                f"  - Максимум: {dfm['memory_percent'].max()}%\n"
+                f"  - Минимум: {dfm['memory_percent'].min()}%\n"
+            )
+    summary_str = cpu_summary + ('\n' if cpu_summary and mem_summary else '') + mem_summary
     # Формируем baseline-параметры (только ключевые, без полного baseline)
     key_params = prompt.split('Вот сводка событий за сегодня:')[0].replace('Ты — опытный администратор MySQL. Вот ключевые параметры сервера:', '').strip()
-    # Формируем сводку
-    summary = []
-    cpu_agg = agg.get('cpu_agg', {})
-    if cpu_agg.get('count'):
-        summary.append(f"**CPU:** среднее: {cpu_agg['avg']:.1f}%, макс: {cpu_agg['max']}%, мин: {cpu_agg['min']}% (пиков: {cpu_agg['count']})")
-    query_time_agg = agg.get('query_time_agg', {})
-    if query_time_agg.get('count'):
-        summary.append(f"**Время выполнения запросов:** среднее: {query_time_agg['avg']:.1f} сек, макс: {query_time_agg['max']} сек, мин: {query_time_agg['min']} сек (всего: {query_time_agg['count']})")
-    # Похожие запросы
-    if agg.get('grouped_queries'):
-        summary.append("**Группы похожих запросов (по INFO):**")
-        for g in agg['grouped_queries'][:5]:
-            summary.append(f"- {g['INFO']} (всего: {g['count']}, среднее время: {g['avg_time']:.1f} сек, макс: {g['max_time']} сек, мин: {g['min_time']} сек)")
-    # Медленные и критические
-    if agg.get('critical_queries'):
-        summary.append("**Критически медленные запросы (>30 сек):**")
-        for q in agg['critical_queries']:
-            summary.append(f"- {q['INFO']} (время: {q['TIME']} сек)")
-    if agg.get('slow_queries'):
-        summary.append("**Медленные запросы (>10 сек):**")
-        for q in agg['slow_queries']:
-            summary.append(f"- {q['INFO']} (время: {q['TIME']} сек)")
-    # Все уникальные запросы (по INFO)
-    all_infos = set(q['INFO'] for q in agg.get('grouped_queries', []))
-    if all_infos:
-        summary.append("\n**Все уникальные запросы за день (по INFO):**")
-        for info in all_infos:
-            summary.append(f"- {info}")
-    summary_str = '\n'.join(summary)
     # Итоговый markdown-отчёт
     report = f"""
-# Сводный отчёт за {datetime.now().strftime('%Y-%m-%d')}
+# Сводный отчёт за {date_str}
 
 ## Ключевые параметры MySQL
 {key_params}

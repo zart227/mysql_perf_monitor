@@ -17,7 +17,6 @@ class MetricsCollector:
             if command.strip().startswith('mysql '):
                 if '--connect-timeout=' not in command:
                     command = command.replace('mysql ', 'mysql --connect-timeout=5 ', 1)
-                command = f"timeout 10s {command}"
             result = self.ssh.exec_command(command, timeout=10)
             if result and 'Access denied' in result:
                 print("[CRITICAL] Ошибка MySQL: неверный логин или пароль. Проверьте переменные окружения в .env!")
@@ -90,7 +89,7 @@ class MetricsCollector:
         return None
 
     def get_mysql_processlist(self):
-        """Получает топ-5 самых долгих запросов, исключая спящие, собственную сессию и системных демонов."""
+        """Получает топ-5 самых долгих запросов, возвращает user, host, time, info для каждого запроса."""
         mysql_user = MYSQL_CONFIG['user']
         mysql_password = MYSQL_CONFIG['password']
         mysql_host = MYSQL_CONFIG['host']
@@ -99,6 +98,8 @@ class MetricsCollector:
         result = self._execute_command(command)
         if DEBUG_MODE:
             logger.info(f"Результат MySQL processlist: {repr(result)}")
+        if not result or not result.strip():
+            return ''
         return result
 
     def analyze_query_performance(self, process_list):
@@ -149,8 +150,4 @@ class MetricsCollector:
             return None
         except Exception as e:
             logger.error(f"Ошибка анализа производительности запросов: {e}")
-            return None
-
-    def get_qcache_status(self):
-        """Получает статус QCache."""
-        return self.ssh.exec_command(f"{mysql_conn_string} -e \"SHOW STATUS LIKE 'Qcache%';\"") 
+            return None 

@@ -2,6 +2,7 @@ import os
 import time
 from datetime import datetime
 import paramiko
+from paramiko.ssh_exception import AuthenticationException
 import sys
 import schedule
 import signal
@@ -129,11 +130,14 @@ def send_daily_report():
     summary_path = os.path.join(REPORTS_DIR, f'daily_summary_{today}.md')
     if os.path.exists(baseline_path) and os.path.exists(events_path):
         generate_daily_summary_report(baseline_path, events_path, summary_path)
-        send_report_email(
-            subject=f"MySQL Perf Daily Summary {today}",
-            body=f"Автоматический сводный отчет MySQL за {today}",
-            attachment_path=summary_path
-        )
+        try:
+            send_report_email(
+                subject=f"MySQL Perf Daily Summary {today}",
+                body=f"Автоматический сводный отчет MySQL за {today}",
+                attachment_path=summary_path
+            )
+        except Exception as e:
+            logger.error(f"Ошибка при отправке email: {e}", exc_info=True)
     else:
         logger.warning(f"Файлы baseline или событийного отчёта не найдены для отправки: {baseline_path}, {events_path}")
 
@@ -189,7 +193,7 @@ def main():
                 
             time.sleep(30)
 
-    except paramiko.ssh_exception.AuthenticationException:
+    except AuthenticationException:
         print("[CRITICAL] Ошибка SSH: неверный логин или пароль. Проверьте переменные окружения в .env!")
         logger.critical("Ошибка SSH: неверный логин или пароль. Проверьте переменные окружения в .env!")
         if ssh_client:
@@ -204,8 +208,7 @@ def main():
     finally:
         if ssh_client and ssh_client.is_connected():
             ssh_client.close()
-    
-    logger.info("Сервис мониторинга MySQL остановлен.")
+        logger.info("Сервис мониторинга MySQL остановлен.")
 
 
 if __name__ == '__main__':
