@@ -35,7 +35,11 @@
 
 Для активации виртуального окружения вручную используйте:
 ```bash
-source venv/bin/activate
+source venv/bin/activate  # Для Linux/Mac
+```
+Или для Windows:
+```bash
+venv\Scripts\activate
 ```
 
 ## Настройки
