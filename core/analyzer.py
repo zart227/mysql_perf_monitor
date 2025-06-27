@@ -12,6 +12,11 @@ class Analyzer:
         :param metrics: Словарь с собранными метриками (в текущей реализации не используется).
         :param cpu_spikes: Список зафиксированных пиков CPU (в текущей реализации не используется).
         """
+        self.metrics = metrics or {}
+        self.cpu_spikes = cpu_spikes or []
+        self.events = {}
+        self.issues = []
+        self.recommendations = []
         # Пороговое значение использования памяти в процентах.
         self.memory_threshold = 90
         # Можно добавить другие пороги здесь

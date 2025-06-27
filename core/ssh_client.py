@@ -1,4 +1,5 @@
 import paramiko
+from paramiko import SSHException
 from config.config import SSH_CONFIG
 from core.logger import logger
 import socket
@@ -47,13 +48,16 @@ class SSHClient:
         
         for attempt in range(retries + 1):
             try:
+                if not self.client:
+                    logger.error("SSH client не инициализирован.")
+                    return None
                 stdin, stdout, stderr = self.client.exec_command(command, timeout=timeout)
                 output = stdout.read().decode('utf-8')
                 error = stderr.read().decode('utf-8')
                 if error:
                     logger.warning(f"Ошибка при выполнении '{command}': {error}")
                 return output
-            except paramiko.ssh_exception.SSHException as e:
+            except SSHException as e:
                 logger.warning(f"Исключение при выполнении команды (попытка {attempt + 1}): {e}")
                 if attempt < retries:
                     if not self.reconnect():
@@ -80,8 +84,10 @@ class SSHClient:
 
     def is_connected(self):
         """Проверяет, активно ли SSH соединение."""
-        if self.client and self.client.get_transport():
-            return self.client.get_transport().is_active()
+        if self.client:
+            transport = self.client.get_transport()
+            if transport and transport.is_active():
+                return True
         return False
 
     def close(self):

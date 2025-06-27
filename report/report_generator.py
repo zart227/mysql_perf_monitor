@@ -5,6 +5,7 @@ import pandas as pd
 import io
 import re
 import logging
+from typing import cast
 from report.ai_prompt_utils import build_ai_prompt
 from core.ai_advisor import send_to_ai_advisor
 import collections
@@ -109,10 +110,10 @@ def parse_innodb_status(status_string):
     """
     Парсит вывод SHOW ENGINE INNODB STATUS, который может быть в двух форматах:
     1. Табличный (с \t и \n)
-    2. Вертикальный (с \G)
+    2. Вертикальный (с \\G)
     """
     if "***************************" in status_string:
-        # Вертикальный формат (\G)
+        # Вертикальный формат (\\G)
         match = re.search(r'Status:\n(.*?)$', status_string, re.DOTALL)
         if match:
             return match.group(1).strip()
@@ -227,7 +228,7 @@ def generate_report(metrics, issues, recommendations, output_path=None):
 
         if key in table_keys and '\t' in value:
             try:
-                df = pd.read_csv(io.StringIO(value), sep='\\t', engine='python')
+                df = pd.read_csv(io.StringIO(value), sep='\t', engine='python')
                 colalign = table_alignments.get(key)
                 if colalign and len(df.columns) != len(colalign):
                     colalign = None # Fallback to default if column count mismatches
@@ -243,7 +244,7 @@ def generate_report(metrics, issues, recommendations, output_path=None):
             proc_list = spike.get('processlist_output')
             if proc_list and isinstance(proc_list, str) and '\t' in proc_list:
                 try:
-                    df = pd.read_csv(io.StringIO(proc_list), sep='\\t', engine='python')
+                    df = pd.read_csv(io.StringIO(proc_list), sep='\t', engine='python')
                     colalign = table_alignments.get('processlist')
                     if colalign and len(df.columns) != len(colalign):
                         colalign = None # Fallback to default
@@ -595,7 +596,7 @@ def generate_daily_summary_report(baseline_path, events_path, output_path):
                 f"  - Минимум: {df['cpu'].min()}%\n"
             )
             # Статистика по времени выполнения запросов
-            df['time_query'] = pd.to_numeric(df['time_query'], errors='coerce').fillna(0)
+            df['time_query'] = cast(pd.Series, pd.to_numeric(df['time_query'], errors='coerce')).fillna(0)
             query_time_agg = (
                 f"**Время выполнения запросов:**\n"
                 f"  - Среднее: {df['time_query'].mean():.1f} сек\n"
@@ -603,7 +604,10 @@ def generate_daily_summary_report(baseline_path, events_path, output_path):
                 f"  - Минимум: {df['time_query'].min()} сек\n"
             )
             # Топ-5 долгих запросов
-            top_long = df.sort_values('time_query', ascending=False).head(5)
+            if not df.empty and 'time_query' in df.columns:
+                top_long = df.sort_values(by='time_query', ascending=False).head(5) # type: ignore
+            else:
+                top_long = pd.DataFrame()
             top_long_str = '\n'.join([
                 f"  - {row['user']}@{row['host']} ({row['time_query']} сек): {str(row['info'])[:100]}..." for _, row in top_long.iterrows()
             ])
@@ -611,12 +615,15 @@ def generate_daily_summary_report(baseline_path, events_path, output_path):
             top_freq_df = df.groupby('info').agg(
                 count=('info', 'size'),
                 avg_cpu=('cpu', 'mean')
-            ).sort_values('count', ascending=False).head(5)
-
-            top_freq_str = '\n'.join([
-                f"  - {info[:100]}... (всего: {row['count']}, ср. CPU: {row['avg_cpu']:.1f}%)" 
-                for info, row in top_freq_df.iterrows()
-            ])
+            )
+            if not top_freq_df.empty:
+                top_freq_df = top_freq_df.sort_values(by='count', ascending=False).head(5) # type: ignore
+                top_freq_str = '\n'.join([
+                    f"  - {str(info)[:100]}... (всего: {row['count']}, ср. CPU: {row['avg_cpu']:.1f}%)" 
+                    for info, row in top_freq_df.iterrows()
+                ])
+            else:
+                top_freq_str = ''
 
             cpu_summary += f"\n{query_time_agg}\n**Топ-5 долгих запросов:**\n{top_long_str}\n\n**Топ-5 частых запросов:**\n{top_freq_str}\n"
     if os.path.exists(mem_csv):
