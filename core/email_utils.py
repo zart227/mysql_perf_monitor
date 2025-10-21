@@ -24,7 +24,7 @@ def validate_email_fields():
     if errors:
         raise ValueError('Ошибка email-конфигурации: ' + '; '.join(errors))
 
-def send_report_email(subject, body, attachment_path=None, html_body=None):
+def send_report_email(subject, body, attachment_path=None, html_body=None, attachments=None):
     validate_email_fields()
     msg = EmailMessage()
     msg['Subject'] = subject
@@ -34,8 +34,16 @@ def send_report_email(subject, body, attachment_path=None, html_body=None):
     if html_body:
         msg.add_alternative(html_body, subtype='html')
 
-    # Добавляем вложение
-    if attachment_path and os.path.exists(attachment_path):
+    # Добавляем вложения (новый вариант)
+    if attachments:
+        for file_path in attachments:
+            if file_path and os.path.exists(file_path):
+                with open(file_path, 'rb') as f:
+                    file_data = f.read()
+                    file_name = os.path.basename(file_path)
+                msg.add_attachment(file_data, maintype='application', subtype='octet-stream', filename=file_name)
+    # Старый вариант для обратной совместимости
+    elif attachment_path and os.path.exists(attachment_path):
         with open(attachment_path, 'rb') as f:
             file_data = f.read()
             file_name = os.path.basename(attachment_path)
@@ -50,8 +58,8 @@ def send_report_email(subject, body, attachment_path=None, html_body=None):
             server.login(SMTP_USER, SMTP_PASSWORD)
             logger.info("Авторизация успешна. Отправляю письмо...")
             server.send_message(msg)
-        logger.info(f"Письмо с отчетом отправлено: {attachment_path}")
-        print(f"Письмо с отчетом отправлено: {attachment_path}")
+        logger.info(f"Письмо с отчетом отправлено: {attachments if attachments else attachment_path}")
+        print(f"Письмо с отчетом отправлено: {attachments if attachments else attachment_path}")
     except (smtplib.SMTPException, socket.timeout, Exception) as e:
         logger.error(f"Ошибка при отправке email: {e}")
         print(f"[EMAIL ERROR] {e}")
