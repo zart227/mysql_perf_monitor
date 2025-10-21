@@ -24,9 +24,12 @@ from config.config import (
     MEMORY_MONITOR_INTERVAL_SECONDS,
     EMAIL_REPORT_TIMES,
     ENABLE_AI,
-    ENABLE_PROXY
+    ENABLE_PROXY,
+    ARCHIVE_ENABLED,
+    ARCHIVE_DAILY_TIME
 )
 from core.email_utils import send_report_email, build_html_report_email
+from tools.archive_manager import run_archive_cleanup
 
 print('CWD:', os.getcwd())
 print('__file__:', __file__)
@@ -125,10 +128,32 @@ def send_daily_report():
     if os.path.exists(baseline_path) and os.path.exists(events_path):
         generate_daily_summary_report(baseline_path, events_path, summary_path)
         try:
+            body = (
+                f"Во вложении — два автоматических отчёта по MySQL за {today}:\n"
+                f"\n"
+                f"1. events_report_{today}.md — подробный событийный отчёт (пики нагрузки, топ-5 долгих запросов, рекомендации).\n"
+                f"2. daily_summary_{today}.md — краткая сводка по дню (агрегированные показатели, AI-рекомендации).\n"
+                f"\nЕсли потребуется дополнительная детализация — дайте знать."
+            )
+            html_body = f"""
+            <html>
+              <body style='font-family: Arial, sans-serif; color: #222;'>
+                <h2>Добрый день, Рутем!</h2>
+                <p>Во вложении — <b>два автоматических отчёта</b> по производительности MySQL за <b>{today}</b>:</p>
+                <ul>
+                  <li><b>events_report_{today}.md</b> — подробный событийный отчёт (пики нагрузки, топ-5 долгих запросов, рекомендации).</li>
+                  <li><b>daily_summary_{today}.md</b> — краткая сводка по дню (агрегированные показатели, AI-рекомендации).</li>
+                </ul>
+                <p>Если потребуется дополнительная детализация — дайте знать.</p>
+                <p style='margin-top:20px;'>С уважением,<br>MySQL Perf Monitor<br><a href='https://github.com/zart227/mysql_perf_monitor'>Проект на GitHub</a></p>
+              </body>
+            </html>
+            """
             send_report_email(
-                subject=f"MySQL Perf Daily Summary {today}",
-                body=f"Автоматический сводный отчет MySQL за {today}",
-                attachment_path=summary_path
+                subject=f"MySQL Perf Reports {today}",
+                body=body,
+                attachments=[events_path, summary_path],
+                html_body=html_body
             )
         except Exception as e:
             logger.error(f"Ошибка при отправке email: {e}", exc_info=True)
@@ -138,6 +163,14 @@ def send_daily_report():
 def main():
     global ssh_client
     logger.info("Сервис мониторинга MySQL запущен в режиме непрерывного отслеживания.")
+    
+    # Запуск архивации и очистки при старте
+    if ARCHIVE_ENABLED:
+        try:
+            logger.info("Запуск процедуры архивации и очистки...")
+            run_archive_cleanup()
+        except Exception as e:
+            logger.error(f"Ошибка при архивации: {e}", exc_info=True)
 
     ssh_client = SSHClient()
     try:
@@ -172,6 +205,11 @@ def main():
         if EMAIL_ENABLED:
             for t in EMAIL_REPORT_TIMES:
                 schedule.every().day.at(t).do(send_daily_report)
+        
+        # Планировщик архивации
+        if ARCHIVE_ENABLED:
+            schedule.every().day.at(ARCHIVE_DAILY_TIME).do(run_archive_cleanup)
+            logger.info(f"Запланирована ежедневная архивация в {ARCHIVE_DAILY_TIME}")
 
         # Heartbeat в основном потоке
         last_main_heartbeat = time.time()
@@ -208,13 +246,34 @@ def main():
 if __name__ == '__main__':
     if '--send-report-now' in sys.argv:
         today = datetime.now().strftime('%Y%m%d')
-        report_path = os.path.join(REPORTS_DIR, EVENTS_REPORT_FILENAME_TEMPLATE.format(date=today))
-        html_body = build_html_report_email(today)
+        events_path = os.path.join(REPORTS_DIR, EVENTS_REPORT_FILENAME_TEMPLATE.format(date=today))
+        summary_path = os.path.join(REPORTS_DIR, f'daily_summary_{today}.md')
+        body = (
+            f"Во вложении — два автоматических отчёта по MySQL за {today}:\n"
+            f"\n"
+            f"1. events_report_{today}.md — подробный событийный отчёт (пики нагрузки, топ-5 долгих запросов, рекомендации).\n"
+            f"2. daily_summary_{today}.md — краткая сводка по дню (агрегированные показатели, AI-рекомендации).\n"
+            f"\nЕсли потребуется дополнительная детализация — дайте знать."
+        )
+        html_body = f"""
+        <html>
+          <body style='font-family: Arial, sans-serif; color: #222;'>
+            <h2>Добрый день, Рутем!</h2>
+            <p>Во вложении — <b>два автоматических отчёта</b> по производительности MySQL за <b>{today}</b>:</p>
+            <ul>
+              <li><b>events_report_{today}.md</b> — подробный событийный отчёт (пики нагрузки, топ-5 долгих запросов, рекомендации).</li>
+              <li><b>daily_summary_{today}.md</b> — краткая сводка по дню (агрегированные показатели, AI-рекомендации).</li>
+            </ul>
+            <p>Если потребуется дополнительная детализация — дайте знать.</p>
+            <p style='margin-top:20px;'>С уважением,<br>MySQL Perf Monitor<br><a href='https://github.com/zart227/mysql_perf_monitor'>Проект на GitHub</a></p>
+          </body>
+        </html>
+        """
         try:
             send_report_email(
-                subject=f"MySQL Perf Report {today}",
-                body=f"Автоматический отчет о событиях MySQL за {today}",
-                attachment_path=report_path,
+                subject=f"MySQL Perf Reports {today}",
+                body=body,
+                attachments=[events_path, summary_path],
                 html_body=html_body
             )
             print("Письмо отправлено успешно!")
