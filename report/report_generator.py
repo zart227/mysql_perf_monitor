@@ -421,17 +421,20 @@ def append_cpu_event_to_report(event_data, report_path):
         logger.error(f"Ошибка при добавлении информации о пике CPU в отчет: {e}", exc_info=True)
 
 def append_memory_event_to_report(event_data, output_path):
-    """Добавляет в отчет событие о высоком потреблении памяти и в CSV."""
+    """Добавляет в отчет событие о высоком потреблении памяти и в CSV по дням (events/memory/YYYY-MM-DD.csv)."""
     _ensure_header(output_path)
-    # CSV-файл для памяти
-    csv_path = os.path.join(os.path.dirname(output_path), 'events_memory.csv')
+    # Новый путь для событий по памяти по дням
+    events_dir = os.path.join(os.path.dirname(output_path), 'events', 'memory')
+    os.makedirs(events_dir, exist_ok=True)
+    date_str = datetime.now().strftime('%Y-%m-%d')
+    csv_path = os.path.join(events_dir, f'{date_str}.csv')
     csv_exists = os.path.exists(csv_path)
     with open(csv_path, 'a', newline='', encoding='utf-8') as csvfile:
         writer = csv.writer(csvfile, quoting=csv.QUOTE_ALL)
         if not csv_exists:
             writer.writerow(['date', 'time', 'memory_percent'])
         writer.writerow([
-            datetime.now().strftime('%Y-%m-%d'),
+            date_str,
             event_data['time'],
             event_data['memory_percent']
         ])
@@ -565,11 +568,17 @@ def parse_and_aggregate_events(events_path):
 def generate_daily_summary_report(baseline_path, events_path, output_path):
     """
     Генерирует итоговый дневной отчёт с AI-рекомендациями и агрегированной сводкой.
-    Теперь всегда использует events_cpu.csv (плоский формат) для CPU и запросов.
+    Теперь всегда использует events/cpu/YYYY-MM-DD.csv и events/memory/YYYY-MM-DD.csv (плоский формат) для CPU и памяти.
+    Дата берётся из имени выходного файла (output_path), а не из текущей даты.
     """
     import pandas as pd
-    today = datetime.now().strftime('%Y-%m-%d')
-    date_str = today
+    import re
+    # Извлекаем дату из output_path (например, daily_summary_20250627.md -> 2025-06-27)
+    date_match = re.search(r'(\d{4})[-_]?(\d{2})[-_]?(\d{2})', output_path)
+    if date_match:
+        date_str = f"{date_match.group(1)}-{date_match.group(2)}-{date_match.group(3)}"
+    else:
+        date_str = datetime.now().strftime('%Y-%m-%d')
     # Формируем промпт для AI
     prompt = build_ai_prompt(baseline_path, events_path)
     if ENABLE_AI:
@@ -579,9 +588,9 @@ def generate_daily_summary_report(baseline_path, events_path, output_path):
             ai_recommendations = f"Ошибка при обращении к AI: {e}"
     else:
         ai_recommendations = 'AI отключён настройками.'
-    # --- Новый блок: читаем только events_cpu.csv ---
-    cpu_csv = os.path.join(os.path.dirname(events_path), 'events_cpu.csv')
-    mem_csv = os.path.join(os.path.dirname(events_path), 'events_memory.csv')
+    # --- Новый блок: читаем только events/cpu/YYYY-MM-DD.csv и events/memory/YYYY-MM-DD.csv ---
+    cpu_csv = os.path.join(os.path.dirname(events_path), 'events', 'cpu', f'{date_str}.csv')
+    mem_csv = os.path.join(os.path.dirname(events_path), 'events', 'memory', f'{date_str}.csv')
     cpu_summary = ''
     mem_summary = ''
     if os.path.exists(cpu_csv):
