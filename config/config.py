@@ -104,4 +104,10 @@ OPENAI_MODEL = os.getenv('OPENAI_MODEL', 'gpt-3.5-turbo')
 
 # Флаги для отключения AI и прокси
 ENABLE_AI = False  # Отключить AI-советник
-ENABLE_PROXY = False  # Отключить прокси 
+ENABLE_PROXY = False  # Отключить прокси
+
+# Настройки архивации отчетов и логов
+ARCHIVE_ENABLED = os.getenv('ARCHIVE_ENABLED', 'True').lower() == 'true'  # Включить автоматическую архивацию
+ARCHIVE_DAYS_TO_KEEP_UNARCHIVED = int(os.getenv('ARCHIVE_DAYS_TO_KEEP_UNARCHIVED', 7))  # Дней для хранения неархивированных файлов
+ARCHIVE_DAYS_TO_KEEP_ARCHIVED = int(os.getenv('ARCHIVE_DAYS_TO_KEEP_ARCHIVED', 90))  # Дней для хранения архивов (3 месяца)
+ARCHIVE_DAILY_TIME = os.getenv('ARCHIVE_DAILY_TIME', '03:00')  # Время ежедневной архивации 
